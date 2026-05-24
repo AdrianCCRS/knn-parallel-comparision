@@ -15,6 +15,9 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import seaborn as sns
 import os
+import sys
+
+SOFT_MODE = '--soft' in sys.argv
 
 sns.set_theme(style='whitegrid', palette='viridis')
 plt.rcParams['figure.dpi'] = 150
@@ -27,7 +30,9 @@ FIGS_DIR = 'analysis/figures'
 os.makedirs(FIGS_DIR, exist_ok=True)
 
 # %%
-df = pd.read_csv('results/benchmark_results.csv')
+CSV_FILE = 'results/benchmark_results_soft.csv' if SOFT_MODE else 'results/benchmark_results.csv'
+print(f"Cargando: {CSV_FILE} ({'soft' if SOFT_MODE else 'full'} mode)")
+df = pd.read_csv(CSV_FILE)
 
 agg = df.groupby(['n', 'd', 'k', 'impl', 'threads']).agg(
     time_ms_mean=('time_ms', 'mean'),
@@ -55,13 +60,27 @@ print(f"N range: {agg['n'].min()} - {agg['n'].max()}")
 print(f"D range: {agg['d'].min()} - {agg['d'].max()}")
 print(f"K range: {sorted(agg['k'].unique())}")
 
+# Adaptive figure parameters
+_FIG1_D = 100 if 100 in agg['d'].unique() else agg['d'].max()
+_FIG1_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+_FIG2_N = 50000 if 50000 in agg['n'].unique() else agg['n'].max()
+_FIG2_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+_FIG4_PIE_N = 100000 if 100000 in agg['n'].unique() else agg['n'].max()
+_FIG4_PIE_D = 500 if 500 in agg['d'].unique() else agg['d'].max()
+_FIG4_PIE_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+_FIG5_N = 100000 if 100000 in agg['n'].unique() else agg['n'].max()
+_FIG5_D = 100 if 100 in agg['d'].unique() else agg['d'].max()
+_FIG5_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+print(f"Fig params: D1={_FIG1_D} N2={_FIG2_N} N4={_FIG4_PIE_N} D4={_FIG4_PIE_D} N5={_FIG5_N} D5={_FIG5_D}")
+print(f"K range: {sorted(agg['k'].unique())}")
+
 # %% [markdown]
-# ## 1. Speedup vs N (D=100, K=5)
+# ## 1. Speedup vs N (D=_FIG1_D, K=_FIG1_K)
 
 # %%
 fig, ax = plt.subplots(figsize=(8, 5))
 
-mask = (agg['d'] == 100) & (agg['k'] == 5) & (agg['impl'] != 'seq')
+mask = (agg['d'] == _FIG1_D) & (agg['k'] == _FIG1_K) & (agg['impl'] != 'seq')
 data = agg[mask].copy()
 
 colors = sns.color_palette('viridis', 6)
@@ -88,7 +107,7 @@ if len(cuda_data) > 0:
 ax.set_xscale('log')
 ax.set_xlabel('N (puntos de entrenamiento)')
 ax.set_ylabel('Speedup vs Secuencial')
-ax.set_title('Speedup vs N  (D=100, K=5)')
+ax.set_title(f'Speedup vs N  (D={int(_FIG1_D)}, K={int(_FIG1_K)})')
 if lines:
     ax.legend(fontsize=8, loc='upper left')
 ax.axhline(y=1.0, color='gray', linestyle=':', alpha=0.5)
@@ -98,12 +117,12 @@ fig.savefig(f'{FIGS_DIR}/fig_1.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 # %% [markdown]
-# ## 2. Speedup vs D (N=50000, K=5)
+# ## 2. Speedup vs D (N=_FIG2_N, K=_FIG2_K)
 
 # %%
 fig, ax = plt.subplots(figsize=(8, 5))
 
-mask = (agg['n'] == 50000) & (agg['k'] == 5) & (agg['impl'] != 'seq')
+mask = (agg['n'] == _FIG2_N) & (agg['k'] == _FIG2_K) & (agg['impl'] != 'seq')
 data = agg[mask].copy()
 
 lines = []
@@ -127,7 +146,7 @@ if len(cuda_data) > 0:
 ax.set_xscale('log')
 ax.set_xlabel('D (caracteristicas)')
 ax.set_ylabel('Speedup vs Secuencial')
-ax.set_title('Speedup vs D  (N=50000, K=5)')
+ax.set_title(f'Speedup vs D  (N={int(_FIG2_N)}, K={int(_FIG2_K)})')
 if lines:
     ax.legend(fontsize=8, loc='upper left')
 ax.axhline(y=1.0, color='gray', linestyle=':', alpha=0.5)
@@ -182,8 +201,8 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
 cuda_all = df[df['impl'] == 'cuda'].copy()
 
-# Pie chart for N=100000, D=500, K=5
-pie_mask = (cuda_all['n'] == 100000) & (cuda_all['d'] == 500) & (cuda_all['k'] == 5)
+# Pie chart with adaptive parameters
+pie_mask = (cuda_all['n'] == _FIG4_PIE_N) & (cuda_all['d'] == _FIG4_PIE_D) & (cuda_all['k'] == _FIG4_PIE_K)
 pie_data = cuda_all[pie_mask]
 if len(pie_data) > 0:
     tfr_mean = pie_data['transfer_ms'].mean()
@@ -193,7 +212,7 @@ if len(pie_data) > 0:
     colors_pie = ['#ff9999', '#66b3ff']
     ax1.pie(sizes, labels=labels, colors=colors_pie, autopct='%1.1f%%',
             startangle=90, explode=(0.02, 0))
-    ax1.set_title('CUDA: N=100K D=500 K=5')
+    ax1.set_title(f'CUDA: N={int(_FIG4_PIE_N)} D={int(_FIG4_PIE_D)} K={int(_FIG4_PIE_K)}')
 else:
     # Fallback: try any available config
     cuda_agg = (cuda_all.groupby(['n', 'd', 'k'])
@@ -209,8 +228,8 @@ else:
     else:
         ax1.text(0.5, 0.5, 'No CUDA data', ha='center', transform=ax1.transAxes)
 
-# Stacked bars: transfer vs compute for K=5
-bar_data = (cuda_all[cuda_all['k'] == 5]
+# Stacked bars: transfer vs compute, adaptive K
+bar_data = (cuda_all[cuda_all['k'] == _FIG4_PIE_K]
             .groupby('n')[['transfer_ms', 'compute_ms']]
             .mean()
             .sort_index())
@@ -235,18 +254,17 @@ fig.savefig(f'{FIGS_DIR}/fig_4.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 # %% [markdown]
-# ## 5. Escalabilidad Fuerte OpenMP (N=100000, D=100, K=5)
+# ## 5. Escalabilidad Fuerte OpenMP
 
 # %%
 fig, ax1 = plt.subplots(figsize=(7, 5))
 
-mask = (agg['n'] == 100000) & (agg['d'] == 100) & (agg['k'] == 5) & (agg['impl'] == 'omp')
+mask = (agg['n'] == _FIG5_N) & (agg['d'] == _FIG5_D) & (agg['k'] == _FIG5_K) & (agg['impl'] == 'omp')
 scale_data = agg[mask].sort_values('threads')
 
 if len(scale_data) == 0:
-    mask = (agg['d'] == 100) & (agg['k'] == 5) & (agg['impl'] == 'omp')
+    mask = (agg['d'] == _FIG5_D) & (agg['k'] == _FIG5_K) & (agg['impl'] == 'omp')
     scale_data = agg[mask].sort_values(['n', 'threads'])
-    # Pick the largest N that has data
     if len(scale_data) > 0:
         best_n = scale_data['n'].max()
         scale_data = scale_data[scale_data['n'] == best_n].sort_values('threads')
@@ -275,7 +293,7 @@ if len(scale_data) > 0:
     ax2.tick_params(axis='y', labelcolor=color2)
 
     max_n = scale_data['n'].max() if len(scale_data) > 0 else 'N/A'
-    ax1.set_title(f'Escalabilidad Fuerte OpenMP  (N={int(max_n)}, D={scale_data["d"].max()}, K={scale_data["k"].max()})')
+    ax1.set_title(f'Escalabilidad Fuerte OpenMP  (N={int(max_n)}, D={int(scale_data["d"].max())}, K={int(scale_data["k"].max())})')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
