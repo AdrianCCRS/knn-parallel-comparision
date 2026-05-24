@@ -5,8 +5,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define TILE 16
-#define MAX_K 32
+#define TILE   16
+#define MAX_K  32
+/*
+ * BATCH_Q: número de queries procesadas por iteración en knn_cuda_predict.
+ * d_dist ocupa BATCH_Q * N * 4 bytes en lugar de Q * N * 4.
+ * Con BATCH_Q=512 y N=500,000: 512 * 500000 * 4 = ~1 GB (manejable).
+ * Reducir si la GPU tiene poca VRAM; aumentar para mayor paralelismo.
+ */
+#define BATCH_Q 512
 
 #define CHECK_CUDA(call) do {                                       \
     cudaError_t _e = (call);                                        \
@@ -20,54 +27,45 @@
 /*
  * compute_distances — tiled kernel, 16x16 threads per block.
  *
- * Grid: 2D  (ceil(N/TILE), ceil(Q/TILE))
+ * Grid: 2D  (ceil(N/TILE), ceil(Q_batch/TILE))
  * Block: 2D (TILE, TILE) = (16, 16)    256 threads
  *
- * Each block computes a TILE×TILE submatrix of the Q×N distance matrix.
+ * Each block computes a TILE×TILE submatrix of the Q_batch×N distance matrix.
  * Shared memory: s_train[16][16] + s_query[16][16] = 2 KB per block.
  *
  * Coalesced loads: threadIdx.x maps to the feature dimension (fast index).
- * For each D-tile all 256 threads cooperatively load one train element and
- * one query element; after __syncthreads a reduction loop accumulates the
- * squared difference over the tile.
  */
 __global__ void compute_distances(
     const float * __restrict__ train,
     const float * __restrict__ query,
     float *distances,
-    int N, int D, int Q)
+    int N, int D, int Q_batch)
 {
     __shared__ float s_train[TILE][TILE];
     __shared__ float s_query[TILE][TILE];
 
-    int tx = threadIdx.x;                     /* dimension index (0..15) */
-    int ty = threadIdx.y;                     /* secondary row   (0..15) */
-    int train_row = blockIdx.x * TILE + tx;   /* output row in N        */
-    int query_row = blockIdx.y * TILE + ty;   /* output row in Q        */
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int train_row = blockIdx.x * TILE + tx;
+    int query_row = blockIdx.y * TILE + ty;
 
     float dist = 0.0f;
 
     for (int tile = 0; tile < (D + TILE - 1) / TILE; tile++) {
-        int d = tile * TILE + tx;             /* global feature column  */
+        int d = tile * TILE + tx;
 
-        /* Coalesced load: consecutive tx → consecutive addresses */
         if (blockIdx.x * TILE + ty < N && d < D)
             s_train[ty][tx] = train[(blockIdx.x * TILE + ty) * (size_t)D + d];
         else
             s_train[ty][tx] = 0.0f;
 
-        if (blockIdx.y * TILE + ty < Q && d < D)
+        if (blockIdx.y * TILE + ty < Q_batch && d < D)
             s_query[ty][tx] = query[(blockIdx.y * TILE + ty) * (size_t)D + d];
         else
             s_query[ty][tx] = 0.0f;
 
         __syncthreads();
 
-        /*
-         * Reduction over the tile dimension k.
-         * Thread (tx,ty) needs s_query[ty][k] and s_train[tx][k] for
-         * all k.  These were loaded cooperatively by all threads.
-         */
         #pragma unroll
         for (int k = 0; k < TILE; k++) {
             float diff = s_query[ty][k] - s_train[tx][k];
@@ -77,29 +75,30 @@ __global__ void compute_distances(
         __syncthreads();
     }
 
-    if (train_row < N && query_row < Q)
+    if (train_row < N && query_row < Q_batch)
         distances[(size_t)query_row * N + train_row] = dist;
 }
 
 /*
- * find_k_nearest — per-thread max-heap over one query row.
+ * find_k_nearest — per-thread max-heap sobre una fila de distancias.
  *
- * Each thread processes one query point (row of the Q×N distance matrix).
- * Maintains a max-heap of k (dist, label) pairs in registers.
- * After scanning all N train points, a majority vote among the k nearest
- * neighbors determines the prediction.
- *
- * Grid: 1D  (ceil(Q / BLOCK_DIM))
+ * Grid: 1D  (ceil(Q_batch / BLOCK_DIM))
  * Block: 1D (BLOCK_DIM)
+ *
+ * Majority vote O(num_classes) usando histograma en lugar de O(K²).
+ * Asume labels enteras en [0, MAX_CLASSES).
  */
+#define MAX_CLASSES 64
+#define BLOCK_DIM   256
+
 __global__ void find_k_nearest(
     const float *distances,
     const float *labels,
-    int N, int Q, int k,
+    int N, int Q_batch, int k,
     float *predictions)
 {
     int q = blockIdx.x * blockDim.x + threadIdx.x;
-    if (q >= Q)
+    if (q >= Q_batch)
         return;
 
     float heap_dist[MAX_K];
@@ -112,9 +111,8 @@ __global__ void find_k_nearest(
         float d = row[i];
 
         if (heap_size < k) {
-            /* push */
             int idx = heap_size++;
-            heap_dist[idx] = d;
+            heap_dist[idx]  = d;
             heap_label[idx] = labels[i];
             while (idx > 0) {
                 int p = (idx - 1) / 2;
@@ -124,8 +122,7 @@ __global__ void find_k_nearest(
                 idx = p;
             }
         } else if (d < heap_dist[0]) {
-            /* pop root, push new element, sift down */
-            heap_dist[0] = d;
+            heap_dist[0]  = d;
             heap_label[0] = labels[i];
             int idx = 0;
             for (;;) {
@@ -142,32 +139,35 @@ __global__ void find_k_nearest(
         }
     }
 
-    /* Majority vote over the k neighbours */
+    /* Majority vote con histograma O(K + C) en lugar de O(K²) */
+    int counts[MAX_CLASSES] = {0};
+    for (int a = 0; a < heap_size; a++) {
+        int cls = (int)heap_label[a];
+        if (cls >= 0 && cls < MAX_CLASSES)
+            counts[cls]++;
+    }
     float best_label = heap_label[0];
     int best_count = 0;
-    for (int a = 0; a < heap_size; a++) {
-        int count = 0;
-        for (int b = 0; b < heap_size; b++)
-            if (heap_label[b] == heap_label[a])
-                count++;
-        if (count > best_count || (count == best_count && heap_label[a] < best_label)) {
-            best_count = count;
-            best_label = heap_label[a];
+    for (int c = 0; c < MAX_CLASSES; c++) {
+        if (counts[c] > best_count) {
+            best_count = counts[c];
+            best_label = (float)c;
         }
     }
     predictions[q] = best_label;
 }
 
 /*
- * knn_cuda_predict — host-side orchestrator.
+ * knn_cuda_predict — host-side orchestrator con streaming batch.
  *
- * 1. Allocate device memory for train, labels, query, distances, predictions.
- * 2. H→D copy: train + labels + query.
- * 3. Launch compute_distances (tiled 2D grid).
- * 4. Launch find_k_nearest (per-query heap + vote).
- * 5. D→H copy: predictions.
- * 6. Timing with cudaEvent_t: out_transfer_ms = H→D + D→H,
- *    out_compute_ms = all kernel execution.
+ * Procesa las Q queries en bloques de BATCH_Q para evitar alocar la
+ * matriz de distancias completa Q×N (que crece cuadráticamente con N).
+ * Memoria GPU para d_dist: BATCH_Q × N × 4 bytes en lugar de Q × N × 4.
+ *
+ * Para N=500,000 y BATCH_Q=512: d_dist = ~1 GB (vs 200 GB con Q=100,000).
+ *
+ * Timing: out_transfer_ms = suma de H→D+D→H de todos los batches,
+ *         out_compute_ms  = suma de cómputo de kernels.
  */
 static void knn_cuda_predict(
     float *h_train, float *h_labels, int N, int D,
@@ -175,6 +175,13 @@ static void knn_cuda_predict(
     float *h_predictions,
     float *out_transfer_ms, float *out_compute_ms)
 {
+    float *d_train, *d_labels, *d_query_batch, *d_dist, *d_pred_batch;
+    CHECK_CUDA(cudaMalloc(&d_train,       (size_t)N * D    * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_labels,      (size_t)N        * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_query_batch, (size_t)BATCH_Q * D * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_dist,        (size_t)BATCH_Q * N * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_pred_batch,  (size_t)BATCH_Q    * sizeof(float)));
+
     cudaEvent_t ev_h2d_s, ev_h2d_e, ev_cmp_s, ev_cmp_e, ev_d2h_s, ev_d2h_e;
     CHECK_CUDA(cudaEventCreate(&ev_h2d_s));
     CHECK_CUDA(cudaEventCreate(&ev_h2d_e));
@@ -183,52 +190,67 @@ static void knn_cuda_predict(
     CHECK_CUDA(cudaEventCreate(&ev_d2h_s));
     CHECK_CUDA(cudaEventCreate(&ev_d2h_e));
 
-    float *d_train, *d_labels, *d_query, *d_dist, *d_pred;
-    CHECK_CUDA(cudaMalloc(&d_train,  (size_t)N * D * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_labels, (size_t)N     * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_query,  (size_t)Q * D * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_dist,   (size_t)Q * N * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_pred,   (size_t)Q     * sizeof(float)));
+    float total_transfer_ms = 0.0f, total_compute_ms = 0.0f;
 
-    /* H→D */
+    /* Transferir train y labels una sola vez (no cambian entre batches) */
     CHECK_CUDA(cudaEventRecord(ev_h2d_s));
     CHECK_CUDA(cudaMemcpy(d_train,  h_train,  (size_t)N * D * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_labels, h_labels, (size_t)N     * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_query,  h_query,  (size_t)Q * D * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaEventRecord(ev_h2d_e));
+    CHECK_CUDA(cudaEventSynchronize(ev_h2d_e));
+    float t_tmp;
+    CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_h2d_s, ev_h2d_e));
+    total_transfer_ms += t_tmp;
 
-    /* Compute */
-    int blocks_per_dim = 256;
-    CHECK_CUDA(cudaEventRecord(ev_cmp_s));
+    /* Procesar queries en batches de BATCH_Q */
+    for (int q_start = 0; q_start < Q; q_start += BATCH_Q) {
+        int q_batch = (q_start + BATCH_Q <= Q) ? BATCH_Q : (Q - q_start);
 
-    dim3 block(TILE, TILE);
-    dim3 grid((N + TILE - 1) / TILE, (Q + TILE - 1) / TILE);
-    compute_distances<<<grid, block>>>(d_train, d_query, d_dist, N, D, Q);
-    CHECK_CUDA(cudaGetLastError());
+        /* H→D: batch de queries */
+        CHECK_CUDA(cudaEventRecord(ev_h2d_s));
+        CHECK_CUDA(cudaMemcpy(d_query_batch,
+                              h_query + (size_t)q_start * D,
+                              (size_t)q_batch * D * sizeof(float),
+                              cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaEventRecord(ev_h2d_e));
+        CHECK_CUDA(cudaEventSynchronize(ev_h2d_e));
+        CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_h2d_s, ev_h2d_e));
+        total_transfer_ms += t_tmp;
 
-    dim3 block2(blocks_per_dim);
-    dim3 grid2((Q + blocks_per_dim - 1) / blocks_per_dim);
-    find_k_nearest<<<grid2, block2>>>(d_dist, d_labels, N, Q, k, d_pred);
-    CHECK_CUDA(cudaGetLastError());
+        /* Kernel 1: compute_distances para el batch */
+        CHECK_CUDA(cudaEventRecord(ev_cmp_s));
+        dim3 block(TILE, TILE);
+        dim3 grid((N + TILE - 1) / TILE, (q_batch + TILE - 1) / TILE);
+        compute_distances<<<grid, block>>>(d_train, d_query_batch, d_dist, N, D, q_batch);
+        CHECK_CUDA(cudaGetLastError());
 
-    CHECK_CUDA(cudaDeviceSynchronize());
-    CHECK_CUDA(cudaEventRecord(ev_cmp_e));
+        /* Kernel 2: find_k_nearest para el batch */
+        dim3 block2(BLOCK_DIM);
+        dim3 grid2((q_batch + BLOCK_DIM - 1) / BLOCK_DIM);
+        find_k_nearest<<<grid2, block2>>>(d_dist, d_labels, N, q_batch, k, d_pred_batch);
+        CHECK_CUDA(cudaGetLastError());
 
-    /* D→H */
-    CHECK_CUDA(cudaEventRecord(ev_d2h_s));
-    CHECK_CUDA(cudaMemcpy(h_predictions, d_pred, (size_t)Q * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaEventRecord(ev_d2h_e));
+        CHECK_CUDA(cudaDeviceSynchronize());
+        CHECK_CUDA(cudaEventRecord(ev_cmp_e));
+        CHECK_CUDA(cudaEventSynchronize(ev_cmp_e));
+        CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_cmp_s, ev_cmp_e));
+        total_compute_ms += t_tmp;
 
-    /* Timing */
-    CHECK_CUDA(cudaEventSynchronize(ev_d2h_e));
-    float t_h2d, t_cmp, t_d2h;
-    CHECK_CUDA(cudaEventElapsedTime(&t_h2d, ev_h2d_s, ev_h2d_e));
-    CHECK_CUDA(cudaEventElapsedTime(&t_cmp, ev_cmp_s, ev_cmp_e));
-    CHECK_CUDA(cudaEventElapsedTime(&t_d2h, ev_d2h_s, ev_d2h_e));
-    *out_transfer_ms = t_h2d + t_d2h;
-    *out_compute_ms  = t_cmp;
+        /* D→H: predicciones del batch */
+        CHECK_CUDA(cudaEventRecord(ev_d2h_s));
+        CHECK_CUDA(cudaMemcpy(h_predictions + q_start,
+                              d_pred_batch,
+                              (size_t)q_batch * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaEventRecord(ev_d2h_e));
+        CHECK_CUDA(cudaEventSynchronize(ev_d2h_e));
+        CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_d2h_s, ev_d2h_e));
+        total_transfer_ms += t_tmp;
+    }
 
-    /* Cleanup */
+    *out_transfer_ms = total_transfer_ms;
+    *out_compute_ms  = total_compute_ms;
+
     CHECK_CUDA(cudaEventDestroy(ev_h2d_s));
     CHECK_CUDA(cudaEventDestroy(ev_h2d_e));
     CHECK_CUDA(cudaEventDestroy(ev_cmp_s));
@@ -237,9 +259,9 @@ static void knn_cuda_predict(
     CHECK_CUDA(cudaEventDestroy(ev_d2h_e));
     CHECK_CUDA(cudaFree(d_train));
     CHECK_CUDA(cudaFree(d_labels));
-    CHECK_CUDA(cudaFree(d_query));
+    CHECK_CUDA(cudaFree(d_query_batch));
     CHECK_CUDA(cudaFree(d_dist));
-    CHECK_CUDA(cudaFree(d_pred));
+    CHECK_CUDA(cudaFree(d_pred_batch));
 }
 
 #endif /* KERNELS_CUH */

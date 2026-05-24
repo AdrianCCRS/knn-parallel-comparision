@@ -52,19 +52,24 @@ extract_compute_ms() {
     sed -n 's/.*compute=\([0-9.]*\)ms.*/\1/p' "$1"
 }
 
+# Timeout máximo por ejecución individual (segundos). Ajustar según hardware.
+SEQ_TIMEOUT=600   # 10 min para secuencial (configs grandes pueden ser lentas)
+OMP_TIMEOUT=120   # 2 min para OpenMP
+CUDA_TIMEOUT=60   # 1 min para CUDA
+
 run_seq() {
     local out="$1" err="$2" train="$3" query="$4" k="$5"
-    ./bin/knn_seq --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    timeout "$SEQ_TIMEOUT" ./bin/knn_seq --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
 }
 
 run_omp() {
     local threads="$1" out="$2" err="$3" train="$4" query="$5" k="$6"
-    ./bin/knn_omp --train "$train" --query "$query" --k "$k" --threads "$threads" --output "$out" 2>"$err"
+    timeout "$OMP_TIMEOUT" ./bin/knn_omp --train "$train" --query "$query" --k "$k" --threads "$threads" --output "$out" 2>"$err"
 }
 
 run_cuda() {
     local out="$1" err="$2" train="$3" query="$4" k="$5"
-    ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    timeout "$CUDA_TIMEOUT" ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
 }
 
 total_configs=0
@@ -97,6 +102,12 @@ for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
         Q=$(( N / 5 > 100 ? N / 5 : 100 ))
+        # Guard CUDA: d_dist = Q*N*4 bytes. Saltar si supera 6 GB de VRAM.
+        dist_mb=$(( Q * N * 4 / 1024 / 1024 ))
+        if (( HAVE_CUDA && dist_mb > 6000 )); then
+            echo "  [skip-cuda-oom] N=$N D=$D: d_dist=${dist_mb}MB > 6000MB"
+            log_err "skip-cuda-oom N=$N D=$D dist_mb=$dist_mb"
+        fi
 
         echo "--- N=$N D=$D Q=$Q ---"
 
@@ -116,22 +127,33 @@ for N in "${N_VALUES[@]}"; do
                 outf="${TMPDIR}/out_${N}_${D}_${K}_${run}.txt"
 
                 # --- Sequential ---
-                if run_seq "$outf" "$errf" "$train" "$query" "$K"; then
+                run_seq "$outf" "$errf" "$train" "$query" "$K"
+                seq_rc=$?
+                if [ $seq_rc -eq 124 ]; then
+                    log_err "TIMEOUT seq N=$N D=$D K=$K run=$run (>${SEQ_TIMEOUT}s)"
+                    tseq=""
+                elif [ $seq_rc -eq 0 ]; then
                     ts=$(extract_time_s "$errf")
                     if [ -n "$ts" ]; then
                         tseq=$(awk "BEGIN {printf \"%.6f\", $ts * 1000}")
                         echo "$N,$D,$K,seq,1,$run,$tseq,0,$tseq,1.0" >> "$CSV"
                     else
                         log_err "parse seq N=$N D=$D K=$K run=$run"
+                        tseq=""
                     fi
                 else
-                    log_err "seq failed N=$N D=$D K=$K run=$run"
+                    log_err "seq failed N=$N D=$D K=$K run=$run (rc=$seq_rc)"
+                    tseq=""
                 fi
                 completed=$((completed + 1))
 
                 # --- OpenMP ---
                 for T in "${THREADS_OMP[@]}"; do
-                    if run_omp "$T" "$outf" "$errf" "$train" "$query" "$K"; then
+                    run_omp "$T" "$outf" "$errf" "$train" "$query" "$K"
+                    omp_rc=$?
+                    if [ $omp_rc -eq 124 ]; then
+                        log_err "TIMEOUT omp N=$N D=$D K=$K T=$T run=$run (>${OMP_TIMEOUT}s)"
+                    elif [ $omp_rc -eq 0 ]; then
                         tomp=$(extract_time_s "$errf")
                         if [ -n "$tomp" ] && [ -n "$tseq" ]; then
                             tomp_ms=$(awk "BEGIN {printf \"%.6f\", $tomp * 1000}")
@@ -141,14 +163,18 @@ for N in "${N_VALUES[@]}"; do
                             log_err "parse omp N=$N D=$D K=$K T=$T run=$run"
                         fi
                     else
-                        log_err "omp failed N=$N D=$D K=$K T=$T run=$run"
+                        log_err "omp failed N=$N D=$D K=$K T=$T run=$run (rc=$omp_rc)"
                     fi
                     completed=$((completed + 1))
                 done
 
                 # --- CUDA ---
-                if [ "$HAVE_CUDA" -eq 1 ]; then
-                    if run_cuda "$outf" "$errf" "$train" "$query" "$K"; then
+                if [ "$HAVE_CUDA" -eq 1 ] && (( dist_mb <= 6000 )); then
+                    run_cuda "$outf" "$errf" "$train" "$query" "$K"
+                    cuda_rc=$?
+                    if [ $cuda_rc -eq 124 ]; then
+                        log_err "TIMEOUT cuda N=$N D=$D K=$K run=$run (>${CUDA_TIMEOUT}s)"
+                    elif [ $cuda_rc -eq 0 ]; then
                         tfr=$(extract_transfer_ms "$errf")
                         tcm=$(extract_compute_ms "$errf")
                         if [ -n "$tfr" ] && [ -n "$tcm" ] && [ -n "$tseq" ]; then
@@ -159,7 +185,7 @@ for N in "${N_VALUES[@]}"; do
                             log_err "parse cuda N=$N D=$D K=$K run=$run"
                         fi
                     else
-                        log_err "cuda failed N=$N D=$D K=$K run=$run"
+                        log_err "cuda failed N=$N D=$D K=$K run=$run (rc=$cuda_rc)"
                     fi
                     completed=$((completed + 1))
                 fi

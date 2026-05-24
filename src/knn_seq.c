@@ -46,20 +46,25 @@ static void heap_pop(Neighbor *heap, int *n)
     }
 }
 
+#define MAX_CLASSES 256
+
+/* O(K + C) con histograma en lugar de O(K²). Asume labels enteras en [0, MAX_CLASSES). */
 static float majority_vote(Neighbor *heap, int n)
 {
     if (n <= 0)
         return 0.0f;
-    int best_cnt = 0;
-    float best_label = heap[0].label;
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < n; i++) {
-        int cnt = 0;
-        for (int j = 0; j < n; j++)
-            if (heap[j].label == heap[i].label)
-                cnt++;
-        if (cnt > best_cnt || (cnt == best_cnt && heap[i].label < best_label)) {
-            best_cnt = cnt;
-            best_label = heap[i].label;
+        int cls = (int)heap[i].label;
+        if (cls >= 0 && cls < MAX_CLASSES)
+            counts[cls]++;
+    }
+    float best_label = heap[0].label;
+    int best_cnt = 0;
+    for (int c = 0; c < MAX_CLASSES; c++) {
+        if (counts[c] > best_cnt) {
+            best_cnt = counts[c];
+            best_label = (float)c;
         }
     }
     return best_label;
@@ -154,6 +159,10 @@ int main(int argc, char **argv)
     if (!train_path || !query_path || !output_path) {
         fprintf(stderr, "usage: %s --train <file.npy> --query <file.npy>"
                         " --k <int> --output <file.txt>\n", argv[0]);
+        return 1;
+    }
+    if (k <= 0 || k > 1024) {
+        fprintf(stderr, "error: k=%d out of range [1, 1024] (heap buffer limit)\n", k);
         return 1;
     }
 

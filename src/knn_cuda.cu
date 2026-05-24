@@ -77,6 +77,11 @@ int main(int argc, char **argv)
                 argv[0]);
         return 1;
     }
+    if (k <= 0 || k > MAX_K) {
+        fprintf(stderr, "error: k=%d out of range [1, %d] (MAX_K limit)\n",
+                k, MAX_K);
+        return 1;
+    }
 
     int dev_count;
     CHECK_CUDA(cudaGetDeviceCount(&dev_count));
