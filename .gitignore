@@ -1,6 +1,5 @@
 bin/
 __pycache__/
-results/*.csv
 *.pyc
 .ipynb_checkpoints/
 data/
