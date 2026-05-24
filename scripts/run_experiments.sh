@@ -36,10 +36,14 @@ done
 
 # --- 1. Cargar módulos -----------------------------------------
 echo "=== Cargando módulos ==="
-module purge
-module load cuda/11.8             # NVCC
-module load cmake/3.29.3          # opcional, no necesario
+if ! command -v module &>/dev/null && [ -f /etc/profile.d/modules.sh ]; then
+    source /etc/profile.d/modules.sh
+fi
+module purge 2>/dev/null || true
+module load cuda/11.8
+module load cmake/3.29.3 2>/dev/null || true
 module list
+echo ""
 
 # --- 2. Verificar herramientas ---------------------------------
 echo "=== Verificando herramientas ==="
