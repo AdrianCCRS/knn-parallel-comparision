@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#SBATCH --job-name=knn-benchmark
+#SBATCH --output=knn_%j.out
+#SBATCH --error=knn_%j.err
+#SBATCH --time=06:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpu_titan
 
 # ============================================================
 #  run_experiments.sh — KNN Paralelo: OpenMP vs CUDA
@@ -14,6 +22,8 @@ set -euo pipefail
 #    sbatch scripts/run_experiments.sh --soft    # SLURM (rapido)
 # ============================================================
 
+set -euo pipefail
+
 # --- Parse flags ------------------------------------------------
 SOFT_MODE=0
 for arg in "$@"; do
@@ -22,17 +32,6 @@ for arg in "$@"; do
         *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft]"; exit 1 ;;
     esac
 done
-
-# --- SLURM header (opcional) -----------------------------------
-#SBATCH --job-name=knn-benchmark
-#SBATCH --output=knn_%j.out
-#SBATCH --error=knn_%j.err
-#SBATCH --time=06:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --partition=gpu_titan
 
 # --- 1. Cargar módulos -----------------------------------------
 echo "=== Cargando módulos ==="
