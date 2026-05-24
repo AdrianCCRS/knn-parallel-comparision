@@ -7,7 +7,7 @@ CUDA_ARCH := sm_52
 SRC_DIR := src
 BIN_DIR := bin
 
-.PHONY: all seq omp cuda benchmark validate clean
+.PHONY: all seq omp cuda benchmark benchmark-soft validate clean
 
 all: seq omp cuda
 
@@ -35,6 +35,9 @@ benchmark:
 validate:
 	bash scripts/validate.sh
 
+benchmark-soft:
+	bash scripts/benchmark.sh --soft
+
 clean:
 	rm -rf $(BIN_DIR)
-	rm -f results/benchmark_results.csv results/errors.log
+	rm -f results/benchmark_results.csv results/benchmark_results_soft.csv results/errors.log

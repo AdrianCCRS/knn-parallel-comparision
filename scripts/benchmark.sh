@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
 set -o pipefail
 
+SOFT_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --soft) SOFT_MODE=1 ;;
+        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft]"; exit 1 ;;
+    esac
+done
+
 DATA_DIR="${KNN_DATA_DIR:-./data}"
 RES_DIR="${KNN_RESULTS_DIR:-./results}"
 mkdir -p "$DATA_DIR" "$RES_DIR"
 
-CSV="${RES_DIR}/benchmark_results.csv"
+if [ "$SOFT_MODE" -eq 1 ]; then
+    CSV="${RES_DIR}/benchmark_results_soft.csv"
+    N_VALUES=(1000 5000 10000)
+    D_VALUES=(2 10 50 100)
+    K_VALUES=(1 3 10)
+    THREADS_OMP=(1 2 4 8)
+    RUNS=3
+    echo "[soft mode] quick benchmark for visualization"
+else
+    CSV="${RES_DIR}/benchmark_results.csv"
+    N_VALUES=(1000 5000 10000 50000 100000 500000)
+    D_VALUES=(2 10 50 100 500 1000)
+    K_VALUES=(1 3 5 10)
+    THREADS_OMP=(1 2 4 8 16)
+    RUNS=5
+fi
+
 ERRLOG="${RES_DIR}/errors.log"
 > "$ERRLOG"
 
 echo "n,d,k,impl,threads,run,time_ms,transfer_ms,compute_ms,speedup_vs_seq" > "$CSV"
-
-N_VALUES=(1000 5000 10000 50000 100000 500000)
-D_VALUES=(2 10 50 100 500 1000)
-K_VALUES=(1 3 5 10)
-THREADS_OMP=(1 2 4 8 16)
-RUNS=5
 TMPDIR="/tmp/knn_bench"
 mkdir -p "$TMPDIR"
 
@@ -117,7 +135,7 @@ for N in "${N_VALUES[@]}"; do
                         tomp=$(extract_time_s "$errf")
                         if [ -n "$tomp" ] && [ -n "$tseq" ]; then
                             tomp_ms=$(awk "BEGIN {printf \"%.6f\", $tomp * 1000}")
-                            sp=$(awk "BEGIN {printf \"%.6f\", $tseq / $tomp}")
+                            sp=$(awk "BEGIN {printf \"%.6f\", $tseq / $tomp_ms}")
                             echo "$N,$D,$K,omp,$T,$run,$tomp_ms,0,$tomp_ms,$sp" >> "$CSV"
                         else
                             log_err "parse omp N=$N D=$D K=$K T=$T run=$run"

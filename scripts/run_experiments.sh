@@ -8,15 +8,26 @@ set -euo pipefail
 #  completo en el cluster Guane.
 #
 #  Uso:
-#    sbatch scripts/run_experiments.sh          # SLURM
-#    bash scripts/run_experiments.sh            # interactive
+#    bash scripts/run_experiments.sh --soft      # benchmark rapido (~15 min)
+#    bash scripts/run_experiments.sh             # benchmark completo (~4-6h)
+#    sbatch scripts/run_experiments.sh           # SLURM (completo)
+#    sbatch scripts/run_experiments.sh --soft    # SLURM (rapido)
 # ============================================================
+
+# --- Parse flags ------------------------------------------------
+SOFT_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --soft) SOFT_MODE=1 ;;
+        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft]"; exit 1 ;;
+    esac
+done
 
 # --- SLURM header (opcional) -----------------------------------
 #SBATCH --job-name=knn-benchmark
 #SBATCH --output=knn_%j.out
 #SBATCH --error=knn_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -94,15 +105,32 @@ export KNN_DATA_DIR=./data
 export KNN_RESULTS_DIR=./results
 
 mkdir -p "$KNN_DATA_DIR" "$KNN_RESULTS_DIR"
-bash scripts/benchmark.sh 2>&1 || echo "  [WARN] benchmark no completó"
+if [ "$SOFT_MODE" -eq 1 ]; then
+    bash scripts/benchmark.sh --soft 2>&1 || echo "  [WARN] soft benchmark no completó"
+else
+    bash scripts/benchmark.sh 2>&1 || echo "  [WARN] benchmark no completó"
+fi
 
 # --- 8. Generar figuras ----------------------------------------
 echo "=== Análisis ==="
 mkdir -p analysis/figures
-$PY analysis/results.py 2>&1 || echo "  [WARN] análisis falló"
+if [ "$SOFT_MODE" -eq 1 ]; then
+    $PY analysis/results.py --soft 2>&1 || echo "  [WARN] análisis soft falló"
+else
+    $PY analysis/results.py 2>&1 || echo "  [WARN] análisis falló"
+fi
 
 echo "=== Listo ==="
-echo "  Resultados: ${KNN_RESULTS_DIR}/benchmark_results.csv"
-echo "  Figuras:    analysis/figures/"
-echo "  Log:        ${KNN_RESULTS_DIR}/errors.log"
-echo "  Salida:     knn_<jobid>.out"
+if [ "$SOFT_MODE" -eq 1 ]; then
+    echo "  Resultados: ${KNN_RESULTS_DIR}/benchmark_results_soft.csv"
+    echo "  Figuras:    analysis/figures/"
+    echo "  Log:        ${KNN_RESULTS_DIR}/errors.log"
+    echo "  Salida:     knn_<jobid>.out"
+    echo ""
+    echo "Para ejecutar el benchmark completo: bash scripts/run_experiments.sh"
+else
+    echo "  Resultados: ${KNN_RESULTS_DIR}/benchmark_results.csv"
+    echo "  Figuras:    analysis/figures/"
+    echo "  Log:        ${KNN_RESULTS_DIR}/errors.log"
+    echo "  Salida:     knn_<jobid>.out"
+fi
