@@ -149,7 +149,7 @@ promedio ± desviación estándar. No cambiar sin actualizar el análisis estad�
 
 ```
 Compilador C:    GCC ≥ 11     Flags: -O2 -Wall -fopenmp
-Compilador CUDA: NVCC ≥ 12    Flags: -O2 -arch=sm_70
+Compilador CUDA: NVCC ≥ 11.8  Flags: -O2 -arch=sm_70
 Python:          ≥ 3.10       Deps: numpy, pandas, matplotlib, seaborn, scikit-learn
 GPU mínima:      Compute Capability 6.0 (Pascal)
 SO:              Ubuntu 22.04 LTS
