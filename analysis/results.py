@@ -26,7 +26,7 @@ plt.rcParams['font.size'] = 10
 plt.rcParams['axes.titlesize'] = 12
 plt.rcParams['axes.labelsize'] = 11
 
-FIGS_DIR = 'analysis/figures'
+FIGS_DIR = 'analysis/soft' if SOFT_MODE else 'analysis/figures'
 os.makedirs(FIGS_DIR, exist_ok=True)
 
 # %%
@@ -65,13 +65,14 @@ _FIG1_D = 100 if 100 in agg['d'].unique() else agg['d'].max()
 _FIG1_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
 _FIG2_N = 50000 if 50000 in agg['n'].unique() else agg['n'].max()
 _FIG2_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+_FIG3_K = 5 if 5 in agg['k'].unique() else sorted(agg['k'].unique())[-1]
 _FIG4_PIE_N = 100000 if 100000 in agg['n'].unique() else agg['n'].max()
 _FIG4_PIE_D = 500 if 500 in agg['d'].unique() else agg['d'].max()
-_FIG4_PIE_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
+_FIG4_PIE_K = 5 if 5 in agg['k'].unique() else sorted(agg['k'].unique())[-1]
 _FIG5_N = 100000 if 100000 in agg['n'].unique() else agg['n'].max()
 _FIG5_D = 100 if 100 in agg['d'].unique() else agg['d'].max()
-_FIG5_K = 5 if 5 in agg['k'].unique() else agg['k'].iloc[0]
-print(f"Fig params: D1={_FIG1_D} N2={_FIG2_N} N4={_FIG4_PIE_N} D4={_FIG4_PIE_D} N5={_FIG5_N} D5={_FIG5_D}")
+_FIG5_K = 5 if 5 in agg['k'].unique() else sorted(agg['k'].unique())[-1]
+print(f"Fig params: D1={_FIG1_D} N2={_FIG2_N} K3={_FIG3_K} N4={_FIG4_PIE_N} D4={_FIG4_PIE_D} N5={_FIG5_N} D5={_FIG5_D}")
 print(f"K range: {sorted(agg['k'].unique())}")
 
 # %% [markdown]
@@ -156,19 +157,19 @@ fig.savefig(f'{FIGS_DIR}/fig_2.png', dpi=300, bbox_inches='tight')
 plt.show()
 
 # %% [markdown]
-# ## 3. Heatmap: Speedup CUDA vs Mejor OpenMP (K=5)
+# ## 3. Heatmap: Speedup CUDA vs Mejor OpenMP (K=_FIG3_K)
 
 # %%
 fig, ax = plt.subplots(figsize=(10, 6))
 
-k5 = agg[(agg['k'] == 5) & (agg['impl'] != 'seq')].copy()
+k_value = agg[(agg['k'] == _FIG3_K) & (agg['impl'] != 'seq')].copy()
 
-omp_best = (k5[k5['impl'] == 'omp']
+omp_best = (k_value[k_value['impl'] == 'omp']
             .groupby(['n', 'd'])['speedup_mean']
             .max()
             .reset_index(name='omp_best_speedup'))
 
-cuda_sp = (k5[k5['impl'] == 'cuda']
+cuda_sp = (k_value[k_value['impl'] == 'cuda']
            [['n', 'd', 'speedup_mean']]
            .rename(columns={'speedup_mean': 'cuda_speedup'}))
 
@@ -182,7 +183,7 @@ if len(heat) > 0:
     if not pivot.empty:
         sns.heatmap(pivot, ax=ax, cmap='RdYlGn', center=1.0, annot=True, fmt='.2f',
                     linewidths=0.5, cbar_kws={'label': 'Speedup CUDA / Speedup Mejor OMP'})
-ax.set_title('Heatmap: CUDA vs Mejor OpenMP  (K=5)')
+ax.set_title(f'Heatmap: CUDA vs Mejor OpenMP  (K={int(_FIG3_K)})')
 ax.set_xlabel('D (caracteristicas)')
 ax.set_ylabel('N (puntos de entrenamiento)')
 if len(heat) == 0:
