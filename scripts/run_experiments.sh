@@ -21,12 +21,11 @@ set -euo pipefail
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --partition=guane
+#SBATCH --partition=gpu_titan
 
 # --- 1. Cargar módulos -----------------------------------------
 echo "=== Cargando módulos ==="
 module purge
-module load gnu14/14.2.0          # GCC ≥ 11 (OpenMP incluido)
 module load cuda/11.8             # NVCC
 module load cmake/3.29.3          # opcional, no necesario
 module list
@@ -45,20 +44,28 @@ else
 fi
 $PY --version
 
-# --- 3. Verificar GPU ------------------------------------------
+# --- 3. Verificar GPU y detectar CUDA arch ----------------------
 echo "=== GPU ==="
+ARCH="sm_52"
 if command -v nvidia-smi &>/dev/null; then
-    nvidia-smi --query-gpu=name,compute_cap,memory.total \
-               --format=csv,noheader 2>/dev/null || echo "  nvidia-smi falló"
+    nvidia-smi 2>/dev/null || echo "  nvidia-smi falló"
+    CC_INFO=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+    if [ -n "$CC_INFO" ]; then
+        CC_MAJOR=$(echo "$CC_INFO" | head -1 | cut -d. -f1 | tr -d ' ')
+        CC_MINOR=$(echo "$CC_INFO" | head -1 | cut -d. -f2 | tr -d ' ')
+        if [ -n "$CC_MAJOR" ] && [ -n "$CC_MINOR" ]; then
+            ARCH="sm_${CC_MAJOR}${CC_MINOR}"
+        fi
+    fi
 fi
-
-ARCH="sm_70"   # Volta V100 — ajustar según GPU real del nodo
 echo "  CUDA arch: $ARCH"
 
 # --- 4. Virtual environment + Python packages --------------------
 echo "=== Creando virtual environment ==="
 VENV_DIR="./.venv"
-$PY -m venv "$VENV_DIR"
+if [ ! -d "$VENV_DIR" ]; then
+    $PY -m venv "$VENV_DIR"
+fi
 set +u
 source "$VENV_DIR/bin/activate"
 set -u

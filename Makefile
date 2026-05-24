@@ -1,7 +1,8 @@
 CC       := gcc
 NVCC     := nvcc
+HOST_CXX := /usr/bin/g++
 CFLAGS   := -O2 -Wall
-CUDA_ARCH := sm_70
+CUDA_ARCH := sm_52
 
 SRC_DIR := src
 BIN_DIR := bin
@@ -23,7 +24,7 @@ $(BIN_DIR)/knn_omp: $(SRC_DIR)/knn_omp.c | $(BIN_DIR)
 	$(CC) $(CFLAGS) -fopenmp -o $@ $<
 
 $(BIN_DIR)/knn_cuda: $(SRC_DIR)/knn_cuda.cu $(SRC_DIR)/kernels.cuh | $(BIN_DIR)
-	$(NVCC) -O2 -arch=$(CUDA_ARCH) -o $@ $<
+	$(NVCC) -O2 -arch=$(CUDA_ARCH) -ccbin=$(HOST_CXX) -o $@ $<
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

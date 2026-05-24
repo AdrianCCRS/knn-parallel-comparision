@@ -21,7 +21,7 @@ echo "--- KNN Validation Suite ---"
 echo "N=$N D=$D Q=$Q k=$K seed=$SEED"
 
 echo -n "Generating dataset... "
-python data_gen.py --n "$N" --d "$D" --q "$Q" --seed "$SEED" --output "$PREFIX" > /dev/null
+python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed "$SEED" --output "$PREFIX" > /dev/null
 echo "done"
 
 echo -n "Running knn_seq... "

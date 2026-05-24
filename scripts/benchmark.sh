@@ -87,7 +87,7 @@ for N in "${N_VALUES[@]}"; do
             train="${prefix}_train.npy"
             query="${prefix}_query.npy"
 
-            python data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
+            python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
                 --output "$prefix" >/dev/null 2>>"$ERRLOG" || {
                 log_err "data_gen failed N=$N D=$D K=$K"
                 continue
@@ -101,7 +101,7 @@ for N in "${N_VALUES[@]}"; do
                 if run_seq "$outf" "$errf" "$train" "$query" "$K"; then
                     ts=$(extract_time_s "$errf")
                     if [ -n "$ts" ]; then
-                        tseq=$(printf "%.6f" "$(echo "scale=6; $ts * 1000" | bc -l)")
+                        tseq=$(awk "BEGIN {printf \"%.6f\", $ts * 1000}")
                         echo "$N,$D,$K,seq,1,$run,$tseq,0,$tseq,1.0" >> "$CSV"
                     else
                         log_err "parse seq N=$N D=$D K=$K run=$run"
@@ -116,8 +116,8 @@ for N in "${N_VALUES[@]}"; do
                     if run_omp "$T" "$outf" "$errf" "$train" "$query" "$K"; then
                         tomp=$(extract_time_s "$errf")
                         if [ -n "$tomp" ] && [ -n "$tseq" ]; then
-                            tomp_ms=$(printf "%.6f" "$(echo "scale=6; $tomp * 1000" | bc -l)")
-                            sp=$(printf "%.6f" "$(echo "scale=6; $tseq / $tomp" | bc -l)")
+                            tomp_ms=$(awk "BEGIN {printf \"%.6f\", $tomp * 1000}")
+                            sp=$(awk "BEGIN {printf \"%.6f\", $tseq / $tomp}")
                             echo "$N,$D,$K,omp,$T,$run,$tomp_ms,0,$tomp_ms,$sp" >> "$CSV"
                         else
                             log_err "parse omp N=$N D=$D K=$K T=$T run=$run"
@@ -134,8 +134,8 @@ for N in "${N_VALUES[@]}"; do
                         tfr=$(extract_transfer_ms "$errf")
                         tcm=$(extract_compute_ms "$errf")
                         if [ -n "$tfr" ] && [ -n "$tcm" ] && [ -n "$tseq" ]; then
-                            ttotal=$(printf "%.6f" "$(echo "scale=6; $tfr + $tcm" | bc -l)")
-                            sp=$(printf "%.6f" "$(echo "scale=6; $tseq / ($tfr + $tcm)" | bc -l)")
+                            ttotal=$(awk "BEGIN {printf \"%.6f\", $tfr + $tcm}")
+                            sp=$(awk "BEGIN {printf \"%.6f\", $tseq / ($tfr + $tcm)}")
                             echo "$N,$D,$K,cuda,1,$run,$ttotal,$tfr,$tcm,$sp" >> "$CSV"
                         else
                             log_err "parse cuda N=$N D=$D K=$K run=$run"
