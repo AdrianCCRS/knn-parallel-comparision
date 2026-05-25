@@ -34,8 +34,9 @@ ERRLOG="${RES_DIR}/errors.log"
 > "$ERRLOG"
 
 echo "n,d,k,impl,threads,run,time_ms,transfer_ms,compute_ms,speedup_vs_seq" > "$CSV"
-TMPDIR="/tmp/knn_bench"
+TMPDIR="/tmp/knn_bench_${USER}_${SLURM_JOB_ID:-$$}"
 mkdir -p "$TMPDIR"
+trap 'rm -rf "$TMPDIR"' EXIT
 
 HAVE_CUDA=0
 [ -x ./bin/knn_cuda ] && HAVE_CUDA=1
@@ -76,6 +77,7 @@ total_configs=0
 for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
+        (( D >= N )) && continue
         for K in "${K_VALUES[@]}"; do
             total_configs=$((total_configs + 1))
         done
@@ -101,6 +103,7 @@ echo ""
 for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
+        (( D >= N )) && continue
         Q=$(( N / 5 > 100 ? N / 5 : 100 ))
         # Guard CUDA: d_dist = Q*N*4 bytes. Saltar si supera 6 GB de VRAM.
         dist_mb=$(( Q * N * 4 / 1024 / 1024 ))
