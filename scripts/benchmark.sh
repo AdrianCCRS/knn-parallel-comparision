@@ -23,7 +23,7 @@ if [ "$SOFT_MODE" -eq 1 ]; then
     echo "[soft mode] quick benchmark for visualization"
 else
     CSV="${RES_DIR}/benchmark_results.csv"
-    N_VALUES=(1000 5000 10000 50000 100000 500000)
+    N_VALUES=(1000 5000 10000 50000 100000)
     D_VALUES=(2 10 50 100 500 1000)
     K_VALUES=(1 3 5 10)
     THREADS_OMP=(1 2 4 8 16)
@@ -34,9 +34,9 @@ ERRLOG="${RES_DIR}/errors.log"
 > "$ERRLOG"
 
 echo "n,d,k,impl,threads,run,time_ms,transfer_ms,compute_ms,speedup_vs_seq" > "$CSV"
-TMPDIR="/tmp/knn_bench_${USER}_${SLURM_JOB_ID:-$$}"
-mkdir -p "$TMPDIR"
-trap 'rm -rf "$TMPDIR"' EXIT
+BENCH_DIR="/tmp/knn_bench_${USER}_${SLURM_JOB_ID:-$$}"
+mkdir -p "$BENCH_DIR"
+trap 'rm -rf "$BENCH_DIR"' EXIT
 
 HAVE_CUDA=0
 [ -x ./bin/knn_cuda ] && HAVE_CUDA=1
@@ -114,20 +114,20 @@ for N in "${N_VALUES[@]}"; do
 
         echo "--- N=$N D=$D Q=$Q ---"
 
+        # Generate data once per (N,D) pair — K does not affect the dataset
+        prefix="${BENCH_DIR}/bench_n${N}_d${D}"
+        train="${prefix}_train.npy"
+        query="${prefix}_query.npy"
+        python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
+            --output "$prefix" >/dev/null 2>>"$ERRLOG" || {
+            log_err "data_gen failed N=$N D=$D"
+            continue
+        }
+
         for K in "${K_VALUES[@]}"; do
-            prefix="${TMPDIR}/bench_n${N}_d${D}_k${K}"
-            train="${prefix}_train.npy"
-            query="${prefix}_query.npy"
-
-            python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
-                --output "$prefix" >/dev/null 2>>"$ERRLOG" || {
-                log_err "data_gen failed N=$N D=$D K=$K"
-                continue
-            }
-
             for run in $(seq 1 $RUNS); do
-                errf="${TMPDIR}/err_${N}_${D}_${K}_${run}.txt"
-                outf="${TMPDIR}/out_${N}_${D}_${K}_${run}.txt"
+                errf="${BENCH_DIR}/err_${N}_${D}_${K}_${run}.txt"
+                outf="${BENCH_DIR}/out_${N}_${D}_${K}_${run}.txt"
 
                 # --- Sequential ---
                 run_seq "$outf" "$errf" "$train" "$query" "$K"
@@ -194,8 +194,9 @@ for N in "${N_VALUES[@]}"; do
                 fi
                 progress
             done
-            rm -f "$train" "$query" "${prefix}"_*.npy "${prefix}"_*.csv
         done
+        rm -f "${prefix}_train.npy" "${prefix}_query.npy" \
+              "${prefix}_train.csv" "${prefix}_query.csv"
     done
 done
 
