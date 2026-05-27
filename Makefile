@@ -2,7 +2,7 @@ CC       := gcc
 NVCC     := nvcc
 HOST_CXX := /usr/bin/g++
 CFLAGS   := -O3 -Wall -march=native -ffast-math
-CUDA_ARCH := sm_52
+CUDA_ARCH ?= sm_52
 
 SRC_DIR := src
 BIN_DIR := bin

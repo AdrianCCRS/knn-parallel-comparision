@@ -26,10 +26,12 @@ set -euo pipefail
 
 # --- Parse flags ------------------------------------------------
 SOFT_MODE=0
+DEBUG_MODE=0
 for arg in "$@"; do
     case "$arg" in
         --soft) SOFT_MODE=1 ;;
-        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft]"; exit 1 ;;
+        --debug) DEBUG_MODE=1 ;;
+        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft] [--debug]"; exit 1 ;;
     esac
 done
 
@@ -92,7 +94,7 @@ echo "=== Compilando ==="
 make clean 2>/dev/null || true
 make seq
 make omp
-CUDA_ARCH="$ARCH" make cuda 2>&1 || echo "  [WARN] knn_cuda no compiló"
+make cuda CUDA_ARCH="$ARCH" 2>&1 || echo "  [WARN] knn_cuda no compiló"
 echo "  Binarios:"
 ls -lh bin/
 
@@ -106,6 +108,10 @@ export OMP_NUM_THREADS=16
 export CUDA_VISIBLE_DEVICES=0
 export KNN_DATA_DIR=./data
 export KNN_RESULTS_DIR=./results
+if [ "$DEBUG_MODE" -eq 1 ]; then
+    export KNN_DEBUG=1
+    echo "  [DEBUG] KNN_DEBUG=1: verbose output enabled"
+fi
 
 mkdir -p "$KNN_DATA_DIR" "$KNN_RESULTS_DIR"
 if [ "$SOFT_MODE" -eq 1 ]; then

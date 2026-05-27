@@ -108,9 +108,46 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    fprintf(stderr, "[DEBUG] train=%p (%d x %d = %zu MB) labels=%p (%d = %zu MB) "
+                    "query=%p (%d x %d = %zu MB)\n",
+            (void*)train, N, D, (size_t)N * D * sizeof(float) / (1024*1024),
+            (void*)labels, N, (size_t)N * sizeof(float) / (1024*1024),
+            (void*)query, Q, D, (size_t)Q * D * sizeof(float) / (1024*1024));
+
+    size_t alloc_train    = (size_t)N * D * sizeof(float);
+    size_t alloc_labels   = (size_t)N * sizeof(float);
+    size_t alloc_qbatch   = (size_t)BATCH_Q * D * sizeof(float);
+    size_t alloc_dist     = (size_t)BATCH_Q * N * sizeof(float);
+    size_t alloc_pred     = (size_t)BATCH_Q * sizeof(float);
+    size_t total_gpu_mem  = alloc_train + alloc_labels + alloc_qbatch
+                          + alloc_dist + alloc_pred;
+    fprintf(stderr, "[DEBUG] GPU memory needed:\n"
+                    "  d_train:       %zu MB  (%zu bytes)\n"
+                    "  d_labels:      %zu MB  (%zu bytes)\n"
+                    "  d_query_batch: %zu MB  (%zu bytes)\n"
+                    "  d_dist:        %zu MB  (%zu bytes)\n"
+                    "  d_pred_batch:  %zu MB  (%zu bytes)\n"
+                    "  TOTAL:         %zu MB  (%zu bytes)\n"
+                    "  GPU global:    %zu MB\n",
+            alloc_train / (1024*1024), alloc_train,
+            alloc_labels / (1024*1024), alloc_labels,
+            alloc_qbatch / (1024*1024), alloc_qbatch,
+            alloc_dist / (1024*1024), alloc_dist,
+            alloc_pred / (1024*1024), alloc_pred,
+            total_gpu_mem / (1024*1024), total_gpu_mem,
+            prop.totalGlobalMem / (1024*1024));
+
+    if (total_gpu_mem > prop.totalGlobalMem) {
+        fprintf(stderr, "ERROR: GPU memory needed (%zu MB) exceeds device memory (%zu MB)\n",
+                total_gpu_mem / (1024*1024), prop.totalGlobalMem / (1024*1024));
+        return 1;
+    }
+
     float *predictions = (float *)malloc((size_t)Q * sizeof(float));
     float transfer_ms = 0.0f, compute_ms = 0.0f;
 
+    fprintf(stderr, "[DEBUG] Calling knn_cuda_predict: N=%d D=%d Q=%d k=%d BATCH_Q=%d\n",
+            N, D, Q, k, BATCH_Q);
     knn_cuda_predict(train, labels, N, D, query, Q, k,
                      predictions, &transfer_ms, &compute_ms);
 

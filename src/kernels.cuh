@@ -49,6 +49,12 @@ __global__ void compute_distances(
     int train_row = blockIdx.x * TILE + tx;
     int query_row = blockIdx.y * TILE + ty;
 
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+        printf("[DEBUG compute_distances] grid=(%d,%d) block=(%d,%d) "
+               "N=%d D=%d Q_batch=%d\n",
+               gridDim.x, gridDim.y, blockDim.x, blockDim.y,
+               N, D, Q_batch);
+
     float dist = 0.0f;
 
     for (int tile = 0; tile < (D + TILE - 1) / TILE; tile++) {
@@ -100,6 +106,12 @@ __global__ void find_k_nearest(
     int q = blockIdx.x * blockDim.x + threadIdx.x;
     if (q >= Q_batch)
         return;
+
+    if (threadIdx.x == 0)
+        printf("[DEBUG find_k_nearest] grid=%d block=%d "
+               "N=%d Q_batch=%d k=%d\n",
+               gridDim.x, blockDim.x,
+               N, Q_batch, k);
 
     float heap_dist[MAX_K];
     float heap_label[MAX_K];
@@ -201,51 +213,82 @@ static void knn_cuda_predict(
     float t_tmp;
     CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_h2d_s, ev_h2d_e));
     total_transfer_ms += t_tmp;
+    fprintf(stderr, "[DEBUG] H2D train+labels: %.3f ms  (train=%zu MB, labels=%zu MB)\n",
+            t_tmp,
+            (size_t)N * D * sizeof(float) / (1024*1024),
+            (size_t)N * sizeof(float) / (1024*1024));
 
     /* Procesar queries en batches de BATCH_Q */
+    int n_batches = (Q + BATCH_Q - 1) / BATCH_Q;
+    fprintf(stderr, "[DEBUG] Processing %d queries in %d batches of %d\n",
+            Q, n_batches, BATCH_Q);
     for (int q_start = 0; q_start < Q; q_start += BATCH_Q) {
         int q_batch = (q_start + BATCH_Q <= Q) ? BATCH_Q : (Q - q_start);
+        int batch_num = q_start / BATCH_Q + 1;
+        fprintf(stderr, "[DEBUG] Batch %d/%d: q_start=%d q_batch=%d\n",
+                batch_num, n_batches, q_start, q_batch);
 
         /* H→D: batch de queries */
         CHECK_CUDA(cudaEventRecord(ev_h2d_s));
         CHECK_CUDA(cudaMemcpy(d_query_batch,
-                              h_query + (size_t)q_start * D,
-                              (size_t)q_batch * D * sizeof(float),
-                              cudaMemcpyHostToDevice));
+                               h_query + (size_t)q_start * D,
+                               (size_t)q_batch * D * sizeof(float),
+                               cudaMemcpyHostToDevice));
         CHECK_CUDA(cudaEventRecord(ev_h2d_e));
         CHECK_CUDA(cudaEventSynchronize(ev_h2d_e));
         CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_h2d_s, ev_h2d_e));
         total_transfer_ms += t_tmp;
+        fprintf(stderr, "[DEBUG] Batch %d H2D query: %.3f ms\n", batch_num, t_tmp);
 
         /* Kernel 1: compute_distances para el batch */
         CHECK_CUDA(cudaEventRecord(ev_cmp_s));
         dim3 block(TILE, TILE);
         dim3 grid((N + TILE - 1) / TILE, (q_batch + TILE - 1) / TILE);
+        fprintf(stderr, "[DEBUG] Batch %d compute_distances grid=(%d,%d) block=(%d,%d)\n",
+                batch_num, grid.x, grid.y, block.x, block.y);
         compute_distances<<<grid, block>>>(d_train, d_query_batch, d_dist, N, D, q_batch);
         CHECK_CUDA(cudaGetLastError());
+        fprintf(stderr, "[DEBUG] Batch %d compute_distances launched OK\n", batch_num);
 
         /* Kernel 2: find_k_nearest para el batch */
         dim3 block2(BLOCK_DIM);
         dim3 grid2((q_batch + BLOCK_DIM - 1) / BLOCK_DIM);
+        fprintf(stderr, "[DEBUG] Batch %d find_k_nearest grid=%d block=%d\n",
+                batch_num, grid2.x, block2.x);
         find_k_nearest<<<grid2, block2>>>(d_dist, d_labels, N, q_batch, k, d_pred_batch);
         CHECK_CUDA(cudaGetLastError());
+        fprintf(stderr, "[DEBUG] Batch %d find_k_nearest launched OK\n", batch_num);
 
         CHECK_CUDA(cudaDeviceSynchronize());
+        fprintf(stderr, "[DEBUG] Batch %d kernels completed (sync OK)\n", batch_num);
         CHECK_CUDA(cudaEventRecord(ev_cmp_e));
         CHECK_CUDA(cudaEventSynchronize(ev_cmp_e));
         CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_cmp_s, ev_cmp_e));
         total_compute_ms += t_tmp;
+        fprintf(stderr, "[DEBUG] Batch %d compute time: %.3f ms\n", batch_num, t_tmp);
 
         /* D→H: predicciones del batch */
         CHECK_CUDA(cudaEventRecord(ev_d2h_s));
         CHECK_CUDA(cudaMemcpy(h_predictions + q_start,
-                              d_pred_batch,
-                              (size_t)q_batch * sizeof(float),
-                              cudaMemcpyDeviceToHost));
+                               d_pred_batch,
+                               (size_t)q_batch * sizeof(float),
+                               cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaEventRecord(ev_d2h_e));
         CHECK_CUDA(cudaEventSynchronize(ev_d2h_e));
         CHECK_CUDA(cudaEventElapsedTime(&t_tmp, ev_d2h_s, ev_d2h_e));
         total_transfer_ms += t_tmp;
+        fprintf(stderr, "[DEBUG] Batch %d D2H predictions: %.3f ms\n", batch_num, t_tmp);
+
+        /* Verificar primeras predicciones del batch */
+        if (q_start < 10) {
+            fprintf(stderr, "[DEBUG] Batch %d first 5 predictions: %.0f %.0f %.0f %.0f %.0f\n",
+                    batch_num,
+                    h_predictions[q_start],
+                    h_predictions[q_start+1],
+                    h_predictions[q_start+2],
+                    h_predictions[q_start+3],
+                    h_predictions[q_start+4]);
+        }
     }
 
     *out_transfer_ms = total_transfer_ms;

@@ -2,10 +2,12 @@
 set -o pipefail
 
 SOFT_MODE=0
+DEBUG_MODE="${KNN_DEBUG:-0}"
 for arg in "$@"; do
     case "$arg" in
         --soft) SOFT_MODE=1 ;;
-        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft]"; exit 1 ;;
+        --debug) DEBUG_MODE=1 ;;
+        *) echo "Unknown flag: $arg"; echo "Usage: $0 [--soft] [--debug]"; exit 1 ;;
     esac
 done
 
@@ -70,7 +72,12 @@ run_omp() {
 
 run_cuda() {
     local out="$1" err="$2" train="$3" query="$4" k="$5"
-    timeout "$CUDA_TIMEOUT" ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    if [ "$DEBUG_MODE" -eq 1 ]; then
+        echo "[DEBUG] Running: ./bin/knn_cuda --train $train --query $query --k $k --output $out"
+        timeout "$CUDA_TIMEOUT" ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>&1 | tee "$err"
+    else
+        timeout "$CUDA_TIMEOUT" ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    fi
 }
 
 total_configs=0
@@ -177,8 +184,16 @@ for N in "${N_VALUES[@]}"; do
 
                 # --- CUDA ---
                 if [ "$HAVE_CUDA" -eq 1 ] && (( dist_mb <= 6000 )); then
+                    if [ "$DEBUG_MODE" -eq 1 ]; then
+                        echo "[DEBUG] CUDA run $run: N=$N D=$D K=$K dist_mb=$dist_mb"
+                    fi
                     run_cuda "$outf" "$errf" "$train" "$query" "$K"
                     cuda_rc=$?
+                    if [ "$DEBUG_MODE" -eq 1 ]; then
+                        echo "[DEBUG] CUDA exit code: $cuda_rc"
+                        echo "[DEBUG] CUDA stderr:"
+                        cat "$errf" 2>/dev/null | head -20
+                    fi
                     if [ $cuda_rc -eq 124 ]; then
                         log_err "TIMEOUT cuda N=$N D=$D K=$K run=$run (>${CUDA_TIMEOUT}s)"
                     elif [ $cuda_rc -eq 0 ]; then
@@ -188,11 +203,24 @@ for N in "${N_VALUES[@]}"; do
                             ttotal=$(awk "BEGIN {printf \"%.6f\", $tfr + $tcm}")
                             sp=$(awk "BEGIN {printf \"%.6f\", $tseq / ($tfr + $tcm)}")
                             echo "$N,$D,$K,cuda,1,$run,$ttotal,$tfr,$tcm,$sp" >> "$CSV"
+                            if [ "$DEBUG_MODE" -eq 1 ]; then
+                                echo "[DEBUG] CUDA OK: transfer=${tfr}ms compute=${tcm}ms total=${ttotal}ms"
+                            fi
                         else
                             log_err "parse cuda N=$N D=$D K=$K run=$run"
+                            if [ "$DEBUG_MODE" -eq 1 ]; then
+                                echo "[DEBUG] CUDA parse failed: tfr='$tfr' tcm='$tcm'"
+                                echo "[DEBUG] Full stderr:"
+                                cat "$errf" 2>/dev/null
+                            fi
                         fi
                     else
                         log_err "cuda failed N=$N D=$D K=$K run=$run (rc=$cuda_rc)"
+                        if [ "$DEBUG_MODE" -eq 1 ]; then
+                            echo "[DEBUG] CUDA FAILED with rc=$cuda_rc"
+                            echo "[DEBUG] Full stderr:"
+                            cat "$errf" 2>/dev/null
+                        fi
                     fi
                     completed=$((completed + 1))
                 fi
