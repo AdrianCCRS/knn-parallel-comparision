@@ -1,52 +1,0 @@
-=== Cargando módulos ===
-
-Currently Loaded Modules:
-  1) cuda/11.8   2) cmake/3.29.3
-
- 
-
-
-=== Verificando herramientas ===
-  gcc:  gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-11)
-  nvcc: Build cuda_11.8.r11.8/compiler.31833905_0
-  make: GNU Make 4.3
-Python 3.9.25
-=== GPU ===
-No devices were found
-  nvidia-smi falló
-  CUDA arch: sm_52
-=== Creando virtual environment ===
-WARNING: You are using pip version 21.3.1; however, version 26.0.1 is available.
-You should consider upgrading via the '/home/yacacerest01/paralela/knn-parallel-comparision/.venv/bin/python3 -m pip install --upgrade pip' command.
-  Python: /home/yacacerest01/paralela/knn-parallel-comparision/.venv/bin/python3
-=== Compilando ===
-rm -rf bin
-rm -f results/benchmark_results.csv results/benchmark_results_soft.csv results/errors.log
-mkdir -p bin
-gcc -O2 -Wall -o bin/knn_seq src/knn_seq.c
-gcc -O2 -Wall -fopenmp -o bin/knn_omp src/knn_omp.c
-nvcc -O2 -arch=sm_52 -ccbin=/usr/bin/g++ -o bin/knn_cuda src/knn_cuda.cu
-  Binarios:
-total 1.8M
--rwxr-xr-x. 1 yacacerest01 CAGE 803K May 24 13:29 knn_cuda
--rwxr-xr-x. 1 yacacerest01 CAGE  19K May 24 13:29 knn_omp
--rwxr-xr-x. 1 yacacerest01 CAGE  18K May 24 13:29 knn_seq
-=== Validando ===
-bash scripts/validate.sh
---- KNN Validation Suite ---
-N=1000 D=10 Q=100 k=5 seed=42
-Generating dataset... done
-Running knn_seq... done
-Running knn_omp... done
-[0;32mPASS[0m: knn_seq vs knn_omp — predictions identical
-Running knn_cuda... make: *** [Makefile:36: validate] Error 1
-  [WARN] validación falló
-=== Benchmark ===
-[soft mode] quick benchmark for visualization
-Benchmark: 36 configs x 3 runs x ~6 impl = ~648 executions
-
---- N=1000 D=2 Q=200 ---
-[--------------------]   0%  (6 / 648)[--------------------]   1%  (12 / 648)[--------------------]   2%  (18 / 648)[--------------------]   3%  (24 / 648)[--------------------]   4%  (30 / 648)[#-------------------]   5%  (36 / 648)[#-------------------]   6%  (42 / 648)[#-------------------]   7%  (48 / 648)[#-------------------]   8%  (54 / 648)--- N=1000 D=10 Q=200 ---
-[#-------------------]   9%  (60 / 648)[##------------------]  10%  (66 / 648)[##------------------]  11%  (72 / 648)[##------------------]  12%  (78 / 648)[##------------------]  12%  (84 / 648)[##------------------]  13%  (90 / 648)[##------------------]  14%  (96 / 648)[###-----------------]  15%  (102 / 648)[###-----------------]  16%  (108 / 648)--- N=1000 D=50 Q=200 ---
-[###-----------------]  17%  (114 / 648)[###-----------------]  18%  (120 / 648)[###-----------------]  19%  (126 / 648)[####----------------]  20%  (132 / 648)[####----------------]  21%  (138 / 648)[####----------------]  22%  (144 / 648)[####----------------]  23%  (150 / 648)[####----------------]  24%  (156 / 648)[#####---------------]  25%  (162 / 648)--- N=1000 D=100 Q=200 ---
-[#####---------------]  25%  (168 / 648)slurmstepd-guane01: error: *** JOB 2434 ON guane01 CANCELLED AT 2026-05-24T13:30:13 ***

@@ -46,6 +46,7 @@ static void heap_pop(Neighbor *heap, int *n)
     }
 }
 
+#define D_TILE 64
 #define MAX_CLASSES 256
 
 /* O(K + C) con histograma en lugar de O(K²). Asume labels enteras en [0, MAX_CLASSES). */
@@ -76,19 +77,29 @@ void knn_predict(const float *train, const float *labels, int N, int D,
     for (int q = 0; q < Q; q++) {
         Neighbor heap[1024];
         int n = 0;
+        const float *qrow = query + (size_t)q * D;
+        float threshold = 1e38f;
 
         for (int i = 0; i < N; i++) {
             float dist = 0.0f;
-            for (int d = 0; d < D; d++) {
-                float diff = train[i * D + d] - query[q * D + d];
-                dist += diff * diff;
+            const float *trow = train + (size_t)i * D;
+            for (int d_base = 0; d_base < D; d_base += D_TILE) {
+                int d_end = d_base + D_TILE < D ? d_base + D_TILE : D;
+                for (int d = d_base; d < d_end; d++) {
+                    float diff = trow[d] - qrow[d];
+                    dist += diff * diff;
+                }
+                if (dist >= threshold) goto skip;
             }
             if (n < k) {
                 heap_push(heap, &n, dist, labels[i]);
-            } else if (dist < heap[0].dist) {
+                if (n == k) threshold = heap[0].dist;
+            } else {
                 heap_pop(heap, &n);
                 heap_push(heap, &n, dist, labels[i]);
+                threshold = heap[0].dist;
             }
+            skip:;
         }
         predictions[q] = majority_vote(heap, n);
     }

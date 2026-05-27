@@ -104,7 +104,11 @@ for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
         (( D >= N )) && continue
-        Q=$(( N / 5 > 100 ? N / 5 : 100 ))
+        # Cap Q so sequential stays within ~50s: budget = 5e10 FLOPs / (N*D)
+        Q_raw=$(( N / 5 > 100 ? N / 5 : 100 ))
+        Q_cap=$(( 50000000000 / (N * D) ))
+        Q_cap=$(( Q_cap < 100 ? 100 : Q_cap ))
+        Q=$(( Q_raw < Q_cap ? Q_raw : Q_cap ))
         # Guard CUDA: d_dist = Q*N*4 bytes. Saltar si supera 6 GB de VRAM.
         dist_mb=$(( Q * N * 4 / 1024 / 1024 ))
         if (( HAVE_CUDA && dist_mb > 6000 )); then
