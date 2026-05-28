@@ -1,7 +1,7 @@
 CC       := gcc
 NVCC     := nvcc
 HOST_CXX := /usr/bin/g++
-CFLAGS   := -O2 -Wall
+CFLAGS   := -O3 -Wall -march=native -ffast-math
 CUDA_ARCH := sm_52
 
 SRC_DIR := src

@@ -3,22 +3,14 @@ import argparse
 import time
 import struct
 import numpy as np
-from sklearn.datasets import make_classification
 
 
-def generate_dataset(n_samples, n_features, n_classes=2, random_seed=42):
-    n_info = max(1, min(n_features - 1, n_features // 2))
-    X, y = make_classification(
-        n_samples=n_samples,
-        n_features=n_features,
-        n_informative=n_info,
-        n_redundant=0,
-        n_repeated=0,
-        n_classes=n_classes,
-        n_clusters_per_class=1,
-        random_state=random_seed,
-    )
-    return X.astype(np.float32), y.astype(np.float32)
+def generate_dataset(n_train, n_query, n_features, n_classes=2, random_seed=42):
+    rng = np.random.default_rng(random_seed)
+    X_train = rng.standard_normal((n_train, n_features)).astype(np.float32)
+    y_train = rng.integers(0, n_classes, n_train).astype(np.float32)
+    X_query = rng.standard_normal((n_query, n_features)).astype(np.float32)
+    return X_train, y_train, X_query
 
 
 def save_binary(path, data, labels=None):
@@ -32,14 +24,6 @@ def save_binary(path, data, labels=None):
             Q, D = data.shape
             f.write(struct.pack('ii', Q, D))
             f.write(data.tobytes())
-
-
-def save_csv(path, data, labels=None):
-    if labels is not None:
-        arr = np.column_stack([data, labels])
-    else:
-        arr = data
-    np.savetxt(path, arr, delimiter=',', fmt='%.6f')
 
 
 def main():
@@ -65,14 +49,10 @@ def main():
     assert args.d < args.n, "d must be < n"
 
     q = args.q if args.q > 0 else max(args.n // 5, 100)
-    total = args.n + q
 
     t0 = time.time()
-    X, y = generate_dataset(total, args.d, args.classes, args.seed)
+    X_train, y_train, X_query = generate_dataset(args.n, q, args.d, args.classes, args.seed)
     gen_time = time.time() - t0
-
-    X_train, y_train = X[:args.n], y[:args.n]
-    X_query = X[args.n:]
 
     print(f"Generated: train={X_train.shape}, query={X_query.shape}, "
           f"classes={args.classes}, time={gen_time:.3f}s")
@@ -82,10 +62,6 @@ def main():
     save_binary(train_path, X_train, y_train)
     save_binary(query_path, X_query)
     print(f"Saved: {train_path}, {query_path}")
-
-    save_csv(f"{args.output}_train.csv", X_train, y_train)
-    save_csv(f"{args.output}_query.csv", X_query)
-    print(f"Saved: {args.output}_train.csv, {args.output}_query.csv")
 
 
 if __name__ == '__main__':

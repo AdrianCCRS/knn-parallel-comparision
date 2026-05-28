@@ -46,24 +46,33 @@ static void heap_pop(Neighbor *heap, int *n)
     }
 }
 
+#define MAX_CLASSES 256
+
+/* O(K + C) con histograma en lugar de O(K²). Asume labels enteras en [0, MAX_CLASSES). */
 static float majority_vote(Neighbor *heap, int n)
 {
     if (n <= 0)
         return 0.0f;
-    int best_cnt = 0;
-    float best_label = heap[0].label;
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < n; i++) {
-        int cnt = 0;
-        for (int j = 0; j < n; j++)
-            if (heap[j].label == heap[i].label)
-                cnt++;
-        if (cnt > best_cnt || (cnt == best_cnt && heap[i].label < best_label)) {
-            best_cnt = cnt;
-            best_label = heap[i].label;
+        int cls = (int)heap[i].label;
+        if (cls >= 0 && cls < MAX_CLASSES)
+            counts[cls]++;
+    }
+    float best_label = heap[0].label;
+    int best_cnt = 0;
+    for (int c = 0; c < MAX_CLASSES; c++) {
+        if (counts[c] > best_cnt) {
+            best_cnt = counts[c];
+            best_label = (float)c;
         }
     }
     return best_label;
 }
+
+/* Tamaño de tile en dimensión D: 64 floats = 256 bytes = 4 líneas de caché.
+ * Mejora localidad en L1/L2 cuando D es grande y hay muchos hilos competiendo. */
+#define D_TILE 64
 
 void knn_predict(const float *train, const float *labels, int N, int D,
                  const float *query, int Q, int k, float *predictions)
@@ -72,19 +81,31 @@ void knn_predict(const float *train, const float *labels, int N, int D,
     for (int q = 0; q < Q; q++) {
         Neighbor heap[1024];
         int n = 0;
+        const float *qrow = query + (size_t)q * D;
+        float threshold = 1e38f;
 
         for (int i = 0; i < N; i++) {
             float dist = 0.0f;
-            for (int d = 0; d < D; d++) {
-                float diff = train[i * D + d] - query[q * D + d];
-                dist += diff * diff;
+            const float *trow = train + (size_t)i * D;
+
+            for (int d_base = 0; d_base < D; d_base += D_TILE) {
+                int d_end = d_base + D_TILE < D ? d_base + D_TILE : D;
+                for (int d = d_base; d < d_end; d++) {
+                    float diff = trow[d] - qrow[d];
+                    dist += diff * diff;
+                }
+                if (dist >= threshold) goto skip_point;
             }
+
             if (n < k) {
                 heap_push(heap, &n, dist, labels[i]);
-            } else if (dist < heap[0].dist) {
+                if (n == k) threshold = heap[0].dist;
+            } else {
                 heap_pop(heap, &n);
                 heap_push(heap, &n, dist, labels[i]);
+                threshold = heap[0].dist;
             }
+            skip_point:;
         }
         predictions[q] = majority_vote(heap, n);
     }
@@ -159,6 +180,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s --train <file.npy> --query <file.npy>"
                         " --k <int> --output <file.txt> [--threads <int>]\n",
                 argv[0]);
+        return 1;
+    }
+    if (k <= 0 || k > 1024) {
+        fprintf(stderr, "error: k=%d out of range [1, 1024] (heap buffer limit)\n", k);
         return 1;
     }
 

@@ -23,7 +23,7 @@ if [ "$SOFT_MODE" -eq 1 ]; then
     echo "[soft mode] quick benchmark for visualization"
 else
     CSV="${RES_DIR}/benchmark_results.csv"
-    N_VALUES=(1000 5000 10000 50000 100000 500000)
+    N_VALUES=(1000 5000 10000 50000 100000)
     D_VALUES=(2 10 50 100 500 1000)
     K_VALUES=(1 3 5 10)
     THREADS_OMP=(1 2 4 8 16)
@@ -34,8 +34,9 @@ ERRLOG="${RES_DIR}/errors.log"
 > "$ERRLOG"
 
 echo "n,d,k,impl,threads,run,time_ms,transfer_ms,compute_ms,speedup_vs_seq" > "$CSV"
-TMPDIR="/tmp/knn_bench"
-mkdir -p "$TMPDIR"
+BENCH_DIR="/tmp/knn_bench_${USER}_${SLURM_JOB_ID:-$$}"
+mkdir -p "$BENCH_DIR"
+trap 'rm -rf "$BENCH_DIR"' EXIT
 
 HAVE_CUDA=0
 [ -x ./bin/knn_cuda ] && HAVE_CUDA=1
@@ -52,25 +53,31 @@ extract_compute_ms() {
     sed -n 's/.*compute=\([0-9.]*\)ms.*/\1/p' "$1"
 }
 
+# Timeout máximo por ejecución individual (segundos). Ajustar según hardware.
+SEQ_TIMEOUT=600   # 10 min para secuencial (configs grandes pueden ser lentas)
+OMP_TIMEOUT=120   # 2 min para OpenMP
+CUDA_TIMEOUT=60   # 1 min para CUDA
+
 run_seq() {
     local out="$1" err="$2" train="$3" query="$4" k="$5"
-    ./bin/knn_seq --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    timeout "$SEQ_TIMEOUT" ./bin/knn_seq --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
 }
 
 run_omp() {
     local threads="$1" out="$2" err="$3" train="$4" query="$5" k="$6"
-    ./bin/knn_omp --train "$train" --query "$query" --k "$k" --threads "$threads" --output "$out" 2>"$err"
+    timeout "$OMP_TIMEOUT" ./bin/knn_omp --train "$train" --query "$query" --k "$k" --threads "$threads" --output "$out" 2>"$err"
 }
 
 run_cuda() {
     local out="$1" err="$2" train="$3" query="$4" k="$5"
-    ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
+    timeout "$CUDA_TIMEOUT" ./bin/knn_cuda --train "$train" --query "$query" --k "$k" --output "$out" 2>"$err"
 }
 
 total_configs=0
 for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
+        (( D >= N )) && continue
         for K in "${K_VALUES[@]}"; do
             total_configs=$((total_configs + 1))
         done
@@ -96,42 +103,64 @@ echo ""
 for N in "${N_VALUES[@]}"; do
     for D in "${D_VALUES[@]}"; do
         (( N * D > 500000000 )) && continue
-        Q=$(( N / 5 > 100 ? N / 5 : 100 ))
+        (( D >= N )) && continue
+        # Cap Q so sequential stays within ~50s: budget = 5e10 FLOPs / (N*D)
+        Q_raw=$(( N / 5 > 100 ? N / 5 : 100 ))
+        Q_cap=$(( 50000000000 / (N * D) ))
+        Q_cap=$(( Q_cap < 100 ? 100 : Q_cap ))
+        Q=$(( Q_raw < Q_cap ? Q_raw : Q_cap ))
+        # Guard CUDA: d_dist = Q*N*4 bytes. Saltar si supera 6 GB de VRAM.
+        dist_mb=$(( Q * N * 4 / 1024 / 1024 ))
+        if (( HAVE_CUDA && dist_mb > 6000 )); then
+            echo "  [skip-cuda-oom] N=$N D=$D: d_dist=${dist_mb}MB > 6000MB"
+            log_err "skip-cuda-oom N=$N D=$D dist_mb=$dist_mb"
+        fi
 
         echo "--- N=$N D=$D Q=$Q ---"
 
+        # Generate data once per (N,D) pair — K does not affect the dataset
+        prefix="${BENCH_DIR}/bench_n${N}_d${D}"
+        train="${prefix}_train.npy"
+        query="${prefix}_query.npy"
+        python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
+            --output "$prefix" >/dev/null 2>>"$ERRLOG" || {
+            log_err "data_gen failed N=$N D=$D"
+            continue
+        }
+
         for K in "${K_VALUES[@]}"; do
-            prefix="${TMPDIR}/bench_n${N}_d${D}_k${K}"
-            train="${prefix}_train.npy"
-            query="${prefix}_query.npy"
-
-            python3 data_gen.py --n "$N" --d "$D" --q "$Q" --seed 42 \
-                --output "$prefix" >/dev/null 2>>"$ERRLOG" || {
-                log_err "data_gen failed N=$N D=$D K=$K"
-                continue
-            }
-
             for run in $(seq 1 $RUNS); do
-                errf="${TMPDIR}/err_${N}_${D}_${K}_${run}.txt"
-                outf="${TMPDIR}/out_${N}_${D}_${K}_${run}.txt"
+                errf="${BENCH_DIR}/err_${N}_${D}_${K}_${run}.txt"
+                outf="${BENCH_DIR}/out_${N}_${D}_${K}_${run}.txt"
 
                 # --- Sequential ---
-                if run_seq "$outf" "$errf" "$train" "$query" "$K"; then
+                run_seq "$outf" "$errf" "$train" "$query" "$K"
+                seq_rc=$?
+                if [ $seq_rc -eq 124 ]; then
+                    log_err "TIMEOUT seq N=$N D=$D K=$K run=$run (>${SEQ_TIMEOUT}s)"
+                    tseq=""
+                elif [ $seq_rc -eq 0 ]; then
                     ts=$(extract_time_s "$errf")
                     if [ -n "$ts" ]; then
                         tseq=$(awk "BEGIN {printf \"%.6f\", $ts * 1000}")
                         echo "$N,$D,$K,seq,1,$run,$tseq,0,$tseq,1.0" >> "$CSV"
                     else
                         log_err "parse seq N=$N D=$D K=$K run=$run"
+                        tseq=""
                     fi
                 else
-                    log_err "seq failed N=$N D=$D K=$K run=$run"
+                    log_err "seq failed N=$N D=$D K=$K run=$run (rc=$seq_rc)"
+                    tseq=""
                 fi
                 completed=$((completed + 1))
 
                 # --- OpenMP ---
                 for T in "${THREADS_OMP[@]}"; do
-                    if run_omp "$T" "$outf" "$errf" "$train" "$query" "$K"; then
+                    run_omp "$T" "$outf" "$errf" "$train" "$query" "$K"
+                    omp_rc=$?
+                    if [ $omp_rc -eq 124 ]; then
+                        log_err "TIMEOUT omp N=$N D=$D K=$K T=$T run=$run (>${OMP_TIMEOUT}s)"
+                    elif [ $omp_rc -eq 0 ]; then
                         tomp=$(extract_time_s "$errf")
                         if [ -n "$tomp" ] && [ -n "$tseq" ]; then
                             tomp_ms=$(awk "BEGIN {printf \"%.6f\", $tomp * 1000}")
@@ -141,14 +170,18 @@ for N in "${N_VALUES[@]}"; do
                             log_err "parse omp N=$N D=$D K=$K T=$T run=$run"
                         fi
                     else
-                        log_err "omp failed N=$N D=$D K=$K T=$T run=$run"
+                        log_err "omp failed N=$N D=$D K=$K T=$T run=$run (rc=$omp_rc)"
                     fi
                     completed=$((completed + 1))
                 done
 
                 # --- CUDA ---
-                if [ "$HAVE_CUDA" -eq 1 ]; then
-                    if run_cuda "$outf" "$errf" "$train" "$query" "$K"; then
+                if [ "$HAVE_CUDA" -eq 1 ] && (( dist_mb <= 6000 )); then
+                    run_cuda "$outf" "$errf" "$train" "$query" "$K"
+                    cuda_rc=$?
+                    if [ $cuda_rc -eq 124 ]; then
+                        log_err "TIMEOUT cuda N=$N D=$D K=$K run=$run (>${CUDA_TIMEOUT}s)"
+                    elif [ $cuda_rc -eq 0 ]; then
                         tfr=$(extract_transfer_ms "$errf")
                         tcm=$(extract_compute_ms "$errf")
                         if [ -n "$tfr" ] && [ -n "$tcm" ] && [ -n "$tseq" ]; then
@@ -159,14 +192,15 @@ for N in "${N_VALUES[@]}"; do
                             log_err "parse cuda N=$N D=$D K=$K run=$run"
                         fi
                     else
-                        log_err "cuda failed N=$N D=$D K=$K run=$run"
+                        log_err "cuda failed N=$N D=$D K=$K run=$run (rc=$cuda_rc)"
                     fi
                     completed=$((completed + 1))
                 fi
                 progress
             done
-            rm -f "$train" "$query" "${prefix}"_*.npy "${prefix}"_*.csv
         done
+        rm -f "${prefix}_train.npy" "${prefix}_query.npy" \
+              "${prefix}_train.csv" "${prefix}_query.csv"
     done
 done
 

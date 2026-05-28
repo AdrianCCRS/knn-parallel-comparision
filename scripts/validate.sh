@@ -15,7 +15,7 @@ D=10
 Q=100
 K=5
 SEED=42
-PREFIX="/tmp/validate_knn_fase2"
+PREFIX="/tmp/validate_knn_${USER:-knn}_$$"
 
 echo "--- KNN Validation Suite ---"
 echo "N=$N D=$D Q=$Q k=$K seed=$SEED"
