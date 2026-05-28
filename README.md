@@ -43,14 +43,7 @@ make all
 make validate
 
 # Benchmark completo (~4-6 h)
-bash scripts/run_experiments.sh
-
-# Benchmark rápido (~15 min, para testing)
-bash scripts/run_experiments.sh --soft
-
-# Generar figuras desde CSV existente
-python analysis/results.py          # full mode  → analysis/figures/
-python analysis/results.py --soft   # soft mode  → analysis/soft/
+bash scripts/benchmark.sh
 ```
 
 ## Estructura del proyecto
@@ -62,14 +55,10 @@ python analysis/results.py --soft   # soft mode  → analysis/soft/
 │   ├── knn_cuda.cu        # Host code CUDA + main()
 │   └── kernels.cuh        # Kernels GPU: compute_distances, find_k_nearest
 ├── scripts/
-│   ├── run_experiments.sh # Orquestador: módulos → compilar → validar → benchmark → figuras
 │   ├── benchmark.sh       # Benchmark automatizado (barrido N×D×K)
 │   └── validate.sh        # Verifica predicciones idénticas entre implementaciones
 ├── analysis/
-│   ├── results.py         # Genera 5 figuras de análisis (ejecutable standalone)
-│   ├── technical_analysis.md  # Análisis detallado de resultados
-│   ├── figures/           # Figuras del benchmark completo (full mode)
-│   └── soft/              # Figuras del benchmark rápido (soft mode)
+│   └── figures/           # Figuras del benchmark (generadas)
 ├── results/
 │   ├── benchmark_results.csv   # Datos crudos del benchmark (generado)
 │   └── errors.log              # Log de errores (generado)
@@ -154,13 +143,11 @@ Ver `analysis/technical_analysis.md` para el análisis completo.
 
 4. Ejecutar benchmark completo (cluster con GPU):
    ```bash
-   sbatch scripts/run_experiments.sh
+   bash scripts/benchmark.sh
    ```
+   
+5. Los resultados se guardarán en `results/benchmark_results.csv`.
 
-5. Generar figuras:
-   ```bash
-   python analysis/results.py
-   ```
 
 ## Licencia
 
